@@ -164,8 +164,8 @@ fn connect_stream(symbol: &str) -> Receiver<MarketEvent> {
 // with the websocket delta events. It takes a snapshot of the remote order book and 
 // repeatedly adds deltas to update the local order book. It prints the order book after every update.
 fn process_orderbook(symbol: &str, receiver: Receiver<MarketEvent>) { 
-    println!("Buffering for 3 seconds");
-    thread::sleep(Duration::from_millis(3000));
+    println!("Buffering for 4 seconds");
+    thread::sleep(Duration::from_millis(4000));
     
     println!("Fetching snapshot");
     let url = format!("{}?symbol={}&maxLevel={}", REST_URL, symbol, MAX_LEVEL);

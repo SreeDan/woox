@@ -61,25 +61,20 @@ impl LocalOrderBook {
         let asks: Vec<_> = self.asks.iter().take(5).collect();
 
         for i in 0..5 {
-            println!("{}", i + 1);
-
             if i < bids.len() {
-                println!("BID Price: {:.2}", bids[i].0);
-                println!("BID Size:  {:.4}", bids[i].1);
+                println!("BID Price: {:.2} \t BID Size: {:.4}", bids[i].0, bids[i].1);
             } else {
-                println!("BID Price: -");
-                println!("BID Size:  -");
+                println!("BID Price: - \t BID Size: -");
             }
+        }
+        println!();
 
+        for i in 0..5 {
             if i < asks.len() {
-                println!("ASK Price: {:.2}", asks[i].0);
-                println!("ASK Size:  {:.4}", asks[i].1);
+                println!("ASK Price: {:.2} \t ASK Size: {:.4}", asks[i].0, asks[i].1);
             } else {
-                println!("ASK Price: -");
-                println!("ASK Size:  -");
+                println!("ASK Price: - \t ASK Size: -");
             }
-            
-            println!("------------------------");
         }
     }
 }
