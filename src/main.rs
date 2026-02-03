@@ -1,15 +1,18 @@
 mod orderbook;
+mod exchange_api_types;
 
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::net::TcpStream;
 
-use serde::{Deserialize, Deserializer};
 use serde_json::json;
-use tungstenite::{connect, Message};
+use tungstenite::{connect, Message, WebSocket};
+use tungstenite::stream::MaybeTlsStream;
 use url::Url;
 
 use orderbook::LocalOrderBook;
+use exchange_api_types::{OrderBookDelta, WsMessage, RestSnapshot};
 
 const WOOX_WS_URL: &str = "wss://wss.woox.io/v3/public";
 const REST_URL: &str = "https://api.woox.io/v3/public/orderbook";
@@ -21,84 +24,48 @@ const WOOX_SUBSCRIBE_CMD: &str = "SUBSCRIBE";
 const WOOX_PING_CMD: &str = "PING";
 const WOOX_PONG_CMD: &str = "PONG";
 
-// WsQuote is a struct representation of the quote response apart of the WsQuote
-#[derive(Debug, Clone, Copy)]
-pub struct WsQuote {
-    pub price: f64,
-    pub quantity: f64,
-}
 
-impl<'de> Deserialize<'de> for WsQuote {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: Vec<String> = Vec::deserialize(deserializer)?;
-        if s.len() < 2 {
-            return Err(serde::de::Error::custom("WsQuote array too short"));
-        }
-        let price = s[0].parse::<f64>().map_err(serde::de::Error::custom)?;
-        let quantity = s[1].parse::<f64>().map_err(serde::de::Error::custom)?;
-        Ok(WsQuote { price, quantity })
-    }
-}
-
-fn f64_from_string<'de, D>(deserializer: D) -> Result<f64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s = String::deserialize(deserializer)?;
-    s.parse::<f64>().map_err(serde::de::Error::custom)
-}
-
-// RestQuote is a struct representation of the quore response apart of the REST endpoint
-#[derive(Debug, Deserialize, Clone, Copy)]
-pub struct RestQuote {
-    #[serde(deserialize_with = "f64_from_string")]
-    pub price: f64,
-    #[serde(deserialize_with = "f64_from_string")]
-    pub quantity: f64,
-}
-
-
-// WsQuote is a struct representation of the quote response apart of the websocket
-#[derive(Debug, Deserialize)]
-pub struct OrderBookDelta {
-    #[serde(rename = "s")]
-    pub symbol: String,
-    #[serde(rename = "prevTs")]
-    pub prev_ts: u64,
-    pub bids: Vec<WsQuote>,
-    pub asks: Vec<WsQuote>,
-}
-
-
-#[derive(Debug, Deserialize)]
-pub struct SnapshotData {
-    pub bids: Vec<RestQuote>,
-    pub asks: Vec<RestQuote>,
-}
-
-// RestSnapshot is a struct representation of the snapshot response from Woo X.
-#[derive(Debug, Deserialize)]
-pub struct RestSnapshot {
-    pub timestamp: u64,
-    pub data: SnapshotData,
-}
-
-// WsMessage is a struct representation of the delta response from the Woo X websocket.
-#[derive(Debug, Deserialize)]
-struct WsMessage {
-    ts: Option<u64>,
-    data: Option<OrderBookDelta>
-}
-
-// MarketEvent is a struct representation of 
+// MarketEvent represents an order book delta provided by the Woo X exchange.
 struct MarketEvent {
-    ts: u64,
     prev_ts: u64,
     delta: OrderBookDelta,
 }
+
+// read_exchange_events reads delta updates from the WebSocket and sends evnts over the Sender
+fn read_exchange_events(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, tx: Sender<MarketEvent>) {
+    loop {
+        if let Ok(Message::Text(text)) = socket.read() {
+            if text.contains(WOOX_PING_CMD) {
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+                let pong = json!(
+                    {
+                        "cmd": WOOX_PONG_CMD,
+                        "ts": now
+                    }).to_string();
+
+                socket.send(Message::Text(pong)).unwrap();
+                continue;
+            }
+
+            if text.contains("success") { continue; }
+
+            match serde_json::from_str::<WsMessage>(&text) {
+                Ok(parsed) => {
+                    if let Some(data) = parsed.data {
+                        let event = MarketEvent {
+                            prev_ts: data.prev_ts,
+                            delta: data,
+                        };
+                        
+                        if tx.send(event).is_err() { break; }
+                    }
+                }
+                Err(e) => println!("Parse err: {} , data: {}", e, text),
+            }
+        }
+    }
+}
+
 
 // connect_stream attempts to connect to the Woo X websocket and returns a receiver
 // to consume the stream of market events for the specified symbol. 
@@ -121,42 +88,9 @@ fn connect_stream(symbol: &str) -> Receiver<MarketEvent> {
         });
 
         socket.send(Message::Text(sub_msg.to_string())).unwrap();
-
-        loop {
-            if let Ok(message) = socket.read() {
-                if let Message::Text(text) = message {
-                    if text.contains(WOOX_PING_CMD) {
-                        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
-                        let pong = json!(
-                            {
-                                "cmd": WOOX_PONG_CMD,
-                                "ts": now
-                            }).to_string();
-
-                        socket.send(Message::Text(pong)).unwrap();
-                        continue;
-                    }
-
-                    if text.contains("success") { continue; }
-
-                    match serde_json::from_str::<WsMessage>(&text) {
-                        Ok(parsed) => {
-                            if let (Some(ts), Some(data)) = (parsed.ts, parsed.data) {
-                                let event = MarketEvent {
-                                    ts,
-                                    prev_ts: data.prev_ts,
-                                    delta: data,
-                                };
-                                
-                                if tx.send(event).is_err() { break; }
-                            }
-                        }
-                        Err(e) => println!("Parse err: {} , data: {}", e, text),
-                    }
-                }
-            }
-        }
+        read_exchange_events(&mut socket, tx);
     });
+
     rx
 }
 

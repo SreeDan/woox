@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use ordered_float::OrderedFloat;
 
+use crate::exchange_api_types::SnapshotData;
+
 // LocalOrderBook contains the current bids and asks for a symbol.
 // OrderBookDeltas can be applied to update the order book in real time.
 pub struct LocalOrderBook {
@@ -17,7 +19,7 @@ impl LocalOrderBook {
     }
 
     // apply_snapshot clears the orderbook and syncs the state to the given snapshot
-    pub fn apply_snapshot(&mut self, data: crate::SnapshotData) {
+    pub fn apply_snapshot(&mut self, data: SnapshotData) {
         self.bids.clear();
         self.asks.clear();
 
